@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 namespace TypechoPlugin\CFImgBedUploader;
 
 use Typecho\Plugin\PluginInterface;
@@ -18,7 +18,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
  *
  * @package CFImgBedUploader
  * @author  Lord2333
- * @version 1.0.0
+ * @version 1.0.1
  * @link https://github.com/Lord2333/CF-ImgBed-Uploader_for_Typecho
  */
 class Plugin implements PluginInterface
@@ -32,6 +32,10 @@ class Plugin implements PluginInterface
         \Typecho\Plugin::factory('Widget_Upload')->modifyHandle     = __CLASS__.'::modifyHandle';
         \Typecho\Plugin::factory('Widget_Upload')->deleteHandle     = __CLASS__.'::deleteHandle';
         \Typecho\Plugin::factory('Widget_Upload')->attachmentHandle = __CLASS__.'::attachmentHandle';
+        
+        // 注册编辑器粘贴上传功能的钩子
+        \Typecho\Plugin::factory('admin/write-post.php')->bottom = array(__CLASS__, 'editorPasteUpload');
+        \Typecho\Plugin::factory('admin/write-page.php')->bottom = array(__CLASS__, 'editorPasteUpload');
     }
 
     public static function deactivate()
@@ -56,7 +60,8 @@ class Plugin implements PluginInterface
         $description->html(
             '<div class="description">' .
             '<p>本插件用于将文章中的图片上传到<a href="https://github.com/MarSeventh/CloudFlare-ImgBed" target="_blank">CloudFlare ImgBed</a>图床。</p>' .
-            '<p><a href= "https://github.com/Lord2333/CF-ImgBed-Uploader_for_Typecho" target="_blank"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/Lord2333/CF-ImgBed-Uploader_for_Typecho?label=%E4%B8%8A%E6%AC%A1%E6%9B%B4%E6%96%B0"></a></p>' .
+            '<p><a href= "https://github.com/Lord2333/CF-ImgBed-Uploader_for_Typecho" target="_blank"><img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/Lord2333/CF-ImgBed-Uploader_for_Typecho?label=%E4%B8%8A%E6%AC%A1%E6%9B%B4%E6%96%B0"></a><a href="https://gan.n1ma.de/https://github.com/Lord2333/CF-ImgBed-Uploader_for_Typecho/archive/refs/tags/typecho.zip" targer="_blank"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/Lord2333/CF-ImgBed-Uploader_for_Typecho?display_name=release">
+</a> <==点击下崽最新版插件</p>' .
             '</div>'
         );
         $form->addItem($description);
@@ -137,6 +142,15 @@ class Plugin implements PluginInterface
             '选择日志文件保存的天数，超过该天数的日志将被自动清理'
         );
         $form->addInput($logRetention);
+        
+        $allowedTypes = new Text(
+            'allowedTypes',
+            NULL,
+            'gif,jpg,jpeg,png,webp',
+            '允许上传的文件类型：',
+            '允许上传的文件类型，多个类型用英文逗号分隔，默认支持常见图片格式'
+        );
+        $form->addInput($allowedTypes);
         
         $serverCompress = new Radio(
             'serverCompress',
@@ -307,8 +321,10 @@ class Plugin implements PluginInterface
 
     private static function _isImage($ext): bool
     {
-        $img_ext_arr = array('gif', 'jpg', 'jpeg', 'png', 'tiff', 'bmp', 'ico', 'psd', 'webp', 'JPG', 'BMP', 'GIF', 'PNG', 'JPEG', 'ICO', 'PSD', 'TIFF', 'WEBP');
-        return in_array($ext, $img_ext_arr);
+        $options = Options::alloc()->plugin(self::PLUGIN_NAME);
+        $allowedTypes = $options->allowedTypes ?? 'gif,jpg,jpeg,png,webp';
+        $img_ext_arr = array_map('trim', explode(',', strtolower($allowedTypes)));
+        return in_array(strtolower($ext), $img_ext_arr);
     }
 
     private static function _uploadOtherFile($file, $ext)
@@ -846,5 +862,93 @@ class Plugin implements PluginInterface
 
         curl_close($ch);
         return $res;
+    }
+    
+    /**
+     * 在编辑器中添加粘贴上传功能
+     */
+    public static function editorPasteUpload()
+    {
+        echo <<<HTML
+<script>
+(function () {
+    // 获取编辑器文本区域
+    const textarea = document.getElementById('text');
+    if (!textarea) return;
+    
+    // 监听粘贴事件
+    textarea.addEventListener('paste', function(e) {
+        const items = e.clipboardData.items;
+        let file = null;
+        
+        // 检查粘贴的内容是否包含文件
+        for (let i = 0; i < items.length; i++) {
+            if (items[i].kind === 'file') {
+                file = items[i].getAsFile();
+                break;
+            }
+        }
+        
+        if (!file) return;
+        
+        // 阻止默认粘贴行为
+        e.preventDefault();
+        
+        // 创建FormData对象
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        // 显示上传中提示
+        const cursorPos = textarea.selectionStart;
+        const uploadingText = '[上传中...]';
+        const textBefore = textarea.value.substring(0, cursorPos);
+        const textAfter = textarea.value.substring(cursorPos);
+        textarea.value = textBefore + uploadingText + textAfter;
+        const newCursorPos = cursorPos + uploadingText.length;
+        textarea.selectionStart = newCursorPos;
+        textarea.selectionEnd = newCursorPos;
+        
+        // 发送AJAX请求上传文件
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', './index.php/action/upload?_=' + new Date().getTime(), true);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.success) {
+                        // 上传成功，替换上传中文本为图片链接
+                        const imgUrl = response.url;
+                        const imgMarkdown = file.type.indexOf('image/') === 0 ? 
+                            `![${file.name}](${imgUrl})` : 
+                            `[${file.name}](${imgUrl})`;
+                        
+                        const currentText = textarea.value;
+                        textarea.value = currentText.replace(uploadingText, imgMarkdown);
+                    } else {
+                        // 上传失败，替换上传中文本为错误信息
+                        const currentText = textarea.value;
+                        textarea.value = currentText.replace(uploadingText, '[上传失败: ' + (response.message || '未知错误') + ']');
+                    }
+                } catch (e) {
+                    // 解析响应失败
+                    const currentText = textarea.value;
+                    textarea.value = currentText.replace(uploadingText, '[上传失败: 响应解析错误]');
+                }
+            } else {
+                // 请求失败
+                const currentText = textarea.value;
+                textarea.value = currentText.replace(uploadingText, '[上传失败: HTTP错误 ' + xhr.status + ']');
+            }
+        };
+        xhr.onerror = function() {
+            // 网络错误
+            const currentText = textarea.value;
+            textarea.value = currentText.replace(uploadingText, '[上传失败: 网络错误]');
+        };
+        xhr.send(formData);
+    });
+})();
+</script>
+HTML;
     }
 }
